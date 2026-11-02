@@ -1,0 +1,14 @@
+{
+  "name": "sentinel-portal-api",
+  "private": true,
+  "type": "module",
+  "version": "1.0.0",
+  "scripts": {
+    "dev": "astro dev",
+    "build": "astro build",
+    "test": "node test/core.test.mjs"
+  },
+  "dependencies": {
+    "astro": "^5.18.2"
+  }
+}

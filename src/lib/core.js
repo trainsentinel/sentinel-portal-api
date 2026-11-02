@@ -68,11 +68,15 @@ export async function checkMember(token, env, fetchImpl = fetch) {
     if (member) break;
   }
   if (!member) return { ok: false, code: 401 };
-  const plans = String(env.AFFILIATE_PLAN_IDS || '').split(',').map(s => s.trim()).filter(Boolean);
-  const pc = (member.planConnections || []).filter(p =>
-    plans.includes(p.planId) && OK_STATUS.has(String(p.status || '').toUpperCase()));
-  if (!pc.length) return { ok: false, code: 403 };
-  return { ok: true, memberId: member.id, pastDue: pc.every(p => String(p.status).toUpperCase() === 'PAST_DUE') };
+  const ids = v => String(v || '').split(',').map(s => s.trim()).filter(Boolean);
+  const plans = ids(env.AFFILIATE_PLAN_IDS), testers = ids(env.TESTER_PLAN_IDS);
+  const active = p => OK_STATUS.has(String(p.status || '').toUpperCase());
+  const conns = member.planConnections || [];
+  // tester plan (free, assigned by hand in the Memberstack dashboard): full portal plus a preview of draft weeks
+  const tester = testers.length > 0 && conns.some(p => testers.includes(p.planId) && active(p));
+  const pc = conns.filter(p => plans.includes(p.planId) && active(p));
+  if (!pc.length && !tester) return { ok: false, code: 403 };
+  return { ok: true, memberId: member.id, tester, pastDue: !tester && pc.every(p => String(p.status).toUpperCase() === 'PAST_DUE') };
 }
 
 // ---------- storage ----------
@@ -153,9 +157,21 @@ export async function handle(req, env, fetchImpl = fetch) {
   const who = await checkMember(bearer(req), env, fetchImpl);
   if (!who.ok) return json(who.code, { error: who.code === 401 ? 'login-required' : 'plan-inactive' }, h);
 
-  if (route === 'weeks') return json(200, { weeks: await liveIndex(kv), pastDue: who.pastDue }, h);
+  if (route === 'weeks') {
+    const live = await liveIndex(kv);
+    if (!who.tester) return json(200, { weeks: live, pastDue: who.pastDue }, h);
+    // testers see every week that has a draft or a published version; drafts are marked as previews
+    const drafts = (await getJSON(kv, 'index:drafts')) || [];
+    const map = new Map(live.map(w => [w.n, { ...w, preview: false }]));
+    for (const d of drafts) map.set(d.n, { ...d, preview: true });
+    return json(200, { weeks: [...map.values()].sort((a, b) => a.n - b.n), pastDue: false, tester: true }, h);
+  }
   const n = Number(route.split('/')[1]);
   if (!validWeek(n)) return json(400, { error: 'bad-week' }, h);
+  if (who.tester) {
+    const d = await getJSON(kv, `week:${n}:draft`);
+    if (d) return json(200, { ...meta(d), html: d.html, preview: true }, h);
+  }
   const w = await getJSON(kv, `week:${n}:live`);
   if (!w) return json(404, { error: 'not-published' }, h);
   return json(200, { ...meta(w), html: w.html }, h);
